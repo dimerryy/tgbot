@@ -1,0 +1,7 @@
+python-telegram-bot[job-queue]==20.7
+python-dotenv==1.0.1
+Flask==3.0.3
+google-api-python-client==2.152.0
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+python-dotenv==1.0.1
