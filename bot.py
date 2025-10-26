@@ -14,6 +14,7 @@ from telegram import (
     Update,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
+from telegram import Update as TGUpdate
 from telegram.ext import (
     Application, ApplicationBuilder, ContextTypes,
     ConversationHandler, CommandHandler, MessageHandler,
@@ -748,6 +749,21 @@ def register_handlers(tgapp: Application):
     tgapp.add_handler(CallbackQueryHandler(copy_phone_cb, pattern="^copy_phone$"))
     tgapp.add_handler(CallbackQueryHandler(copy_ref_cb,   pattern="^copy_ref$"))
     tgapp.add_error_handler(error_handler)
+    tgapp.add_handler(MessageHandler(filters.ALL, _dbg))
+
+    
+
+async def _dbg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        log.info("DBG update type=%s chat_id=%s", type(update), chat_id)
+        if chat_id:
+            await context.bot.send_message(chat_id, "✅ Bot received your update.")
+    except Exception as e:
+        log.exception("DBG handler error: %s", e)
+
+
+
 
 # =====================
 # Webhook server (Render)
@@ -772,7 +788,7 @@ def healthz():
 
 @app.post(f"/webhook/{os.environ.get('WEBHOOK_SECRET', 'whsec')}")
 def telegram_webhook():
-    # Only accept Telegram’s signed calls
+    # Verify Telegram secret token header
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != os.environ.get("WEBHOOK_SECRET", "whsec"):
         return "forbidden", 403
 
@@ -780,13 +796,17 @@ def telegram_webhook():
         return "bot not ready", 503
 
     data = request.get_json(force=True, silent=True) or {}
-    update = Update.de_json(data, tg_app_server.bot)
+    # IMPORTANT: use the aliased class
+    update = TGUpdate.de_json(data, tg_app_server.bot)
 
-    # Schedule processing onto the running background loop
-    asyncio.run_coroutine_threadsafe(tg_app_server.process_update(update), app_loop)
+    # Hand over to the running asyncio loop
+    asyncio.run_coroutine_threadsafe(
+        tg_app_server.process_update(update),
+        app_loop
+    )
 
-    # Return immediately so Telegram doesn't time out
     return "ok", 200
+
 
 
 # Gunicorn imports this module => run server boot path
