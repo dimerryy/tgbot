@@ -12,8 +12,7 @@ import asyncio
 from threading import Thread
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
-from google.oauth2.credentials import Credentials
+
 from dotenv import load_dotenv
 from flask import Flask, request, abort
 
@@ -31,6 +30,8 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
+import json
+from google.oauth2.credentials import Credentials
 
 # ---------------- Config & Globals ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -43,7 +44,7 @@ if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN not set")
 
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # e.g., https://your-domain.com
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "whsec_qwertyyy")  # keep simple: default to token
+WEBHOOK_SECRET = "mysecret"  # keep simple: default to token
 ADMIN_ID = (os.environ.get("ADMIN_USER_ID") or "").strip()
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 PAYMENT_PHONE = (os.environ.get("PAYMENT_PHONE") or "+77776952267").strip()
@@ -774,9 +775,6 @@ contact_conv = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", cancel)],
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.DEBUG)
-logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 
 application.add_handler(contact_conv)
 application.add_handler(conv)
@@ -798,58 +796,40 @@ flask_app = Flask(__name__)
 def health():
     return "OK", 200
 
-@flask_app.post(f"/webhook/whsec_qwertyyy")
+@flask_app.post(f"/webhook/{WEBHOOK_SECRET}")
 def telegram_webhook():
     if not request.is_json:
         abort(400)
-
-    try:
-        payload = request.get_json(force=True)
-        update = Update.de_json(payload, application.bot)
-    except Exception as e:
-        log.exception("Failed to parse Telegram update: %s", e)
-        return "", 200  # acknowledge to avoid retries storm
-
-    # hand over to PTB loop without waiting
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    # hand over to PTB (running loop in background thread)
     fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
-
-    def _done(f):
-        try:
-            f.result()
-        except Exception as e:
-            log.exception("Update handling failed: %s", e)
-
-    fut.add_done_callback(_done)
+    try:
+        fut.result(timeout=0.5)  # don't block long; errors propagate here
+    except Exception as e:
+        log.warning("process_update async error: %s", e)
     return "", 200
-
 
 @flask_app.get("/set_webhook")
 def set_webhook():
     if not PUBLIC_URL:
         return "Set PUBLIC_URL env to use this endpoint", 400
-    url = f"{PUBLIC_URL}/webhook/whsec_qwertyyy"
+    url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
     async def _set():
         return await application.bot.set_webhook(url=url, allowed_updates=Update.ALL_TYPES)
     fut = asyncio.run_coroutine_threadsafe(_set(), _ptb_loop)
     return ("OK" if fut.result() else "Failed"), 200
 
 # ---------------- Boot ----------------
-_ptb_ready = False
-
 def _start_ptb():
-    global _ptb_ready
-    init_db(); ensure_seat_columns(); cleanup_expired_now()
+    # init DB & housekeeping
+    init_db()
+    ensure_seat_columns()
+    cleanup_expired_now()
+    # start PTB (initialize + start) inside its own loop
+    _ptb_loop.call_soon_threadsafe(lambda: None)  # ensure loop is alive
     asyncio.run_coroutine_threadsafe(application.initialize(), _ptb_loop).result()
     asyncio.run_coroutine_threadsafe(application.start(), _ptb_loop).result()
-    _ptb_ready = True
     log.info("PTB Application started.")
-
-@flask_app.before_request
-def _ensure_ready():
-    if request.path.startswith("/webhook/") and not _ptb_ready:
-        # Telegram will retry; just 200 to avoid spam
-        return ("", 200)
-
 
 # Create & start PTB event loop in background
 _ptb_loop = asyncio.new_event_loop()
