@@ -12,7 +12,8 @@ import asyncio
 from threading import Thread
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-
+import json
+from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
 from flask import Flask, request, abort
 
@@ -46,7 +47,7 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", BOT_TOKEN)  # keep simple: def
 ADMIN_ID = (os.environ.get("ADMIN_USER_ID") or "").strip()
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 PAYMENT_PHONE = (os.environ.get("PAYMENT_PHONE") or "+77776952267").strip()
-GMAIL_TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "/etc/secrets/token.pickle")
+GMAIL_TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "/etc/secrets/token.json")
 
 
 RATE_PER_HOUR = 200
@@ -235,8 +236,10 @@ if not os.path.exists(GMAIL_TOKEN_PATH):
     )
 
 try:
-    with open(GMAIL_TOKEN_PATH, "rb") as token_file:
-        gmail_creds = pickle.load(token_file)
+    
+    with open(GMAIL_TOKEN_PATH, "r") as token_file:
+        gmail_creds = Credentials.from_authorized_user_info(json.load(token_file))
+
     gmail_service = build("gmail", "v1", credentials=gmail_creds)
     log.info("Gmail enabled (required) — credentials loaded.")
 except Exception as e:
