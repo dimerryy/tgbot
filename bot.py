@@ -9,25 +9,25 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from googleapiclient.discovery import build
 
 from telegram import (
     Update,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from telegram.ext import (
-    ApplicationBuilder, Application, ContextTypes,
+    Application, ApplicationBuilder, ContextTypes,
     ConversationHandler, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
 )
 
 # Flask for webhook mode
-from flask import Flask, request, abort
-from telegram import Update as TGUpdate  # avoid name clash
+from flask import Flask, request
 
 # =====================
-# Config
+# Config (env overrides at boot)
 # =====================
+global DB_PATH, ADMIN_ID, PAYMENT_PHONE
+
 RATE_PER_HOUR = 200
 CURRENCY = "KZT"
 MIN_DURATION_MIN = 15
@@ -52,9 +52,8 @@ DB_PATH = os.environ.get("DB_PATH", "bot.db")
 ADMIN_ID = os.environ.get("ADMIN_USER_ID", "").strip()
 PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", "+7XXXXXXXXXX").strip()
 
-# Gmail token (optional)
+# Optional Gmail token path (Render Secret File or local file)
 GMAIL_TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "/etc/secrets/token.pickle")
-
 
 # =====================
 # DB schema & helpers
@@ -143,7 +142,7 @@ def parse_duration(text: str) -> int | None:
     if m: return int(round(float(m.group(1)) * 60))
     m = re.fullmatch(r"(\d+)\s*h(?:ours?)?\s*(\d+)\s*m(?:in(?:utes?)?)?", t)
     if m: return int(m.group(1))*60 + int(m.group(2))
-    m = re.fullmatch(r"(\d+)\s*h(?:ours?)?", t)
+    m = re.fullmatch(r"(\d+)\s*h(?:hours?)?", t)
     if m: return int(m.group(1))*60
     m = re.fullmatch(r"(\d+)\s*m(?:in(?:utes?)?)?", t)
     if m: return int(m.group(1))
@@ -207,52 +206,44 @@ def get_seat_availability():
     return max(0, free), eta_minutes
 
 # =====================
-# Gmail (optional)
+# Gmail (optional, subject-only)
 # =====================
-# --- Gmail monitor (as before) ---
-import pickle
-from googleapiclient.discovery import build
-import asyncio
-
-# If you’re on Render with a Secret File:
-TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "token.pickle")
-# For local runs, you can switch to:
-# TOKEN_PATH = "token.pickle"
-
-# with open(TOKEN_PATH, "rb") as token:
-#     creds = pickle.load(token)
-
-# gmail_service = build('gmail', 'v1', credentials=creds)
-
 gmail_service = None
 def _headers_map(payload):
     return {h['name']: h['value'] for h in payload.get('headers', [])}
 
-async def monitor_gmail(update, context):
+def _init_gmail():
+    global gmail_service
+    try:
+        with open(GMAIL_TOKEN_PATH, "rb") as token:
+            creds = pickle.load(token)
+        from googleapiclient.discovery import build as gbuild
+        gmail_service = gbuild('gmail', 'v1', credentials=creds)
+        log.info("Gmail monitor enabled.")
+    except Exception as e:
+        gmail_service = None
+        log.warning("Failed to init Gmail service: %s — Gmail monitor disabled.", e)
+
+async def monitor_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if gmail_service is None:
-        await context.bot.send_message(update.effective_chat.id,
-                                   "Verification auto-forward is unavailable.")
+        await context.bot.send_message(update.effective_chat.id, "Verification auto-forward is unavailable.")
         return
 
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, "Log in, and I will send you a verification code…")
 
-    # Get the current latest message id
     res = gmail_service.users().messages().list(userId='me', maxResults=1).execute()
     latest_id = res['messages'][0]['id'] if 'messages' in res else None
 
     while True:
-        await asyncio.sleep(5)  # check every 5 seconds
-
+        await asyncio.sleep(5)
         res = gmail_service.users().messages().list(userId='me', maxResults=1).execute()
         if 'messages' not in res:
-            continue  # inbox empty, keep waiting
-
+            continue
         new_id = res['messages'][0]['id']
         if latest_id and new_id == latest_id:
-            continue  # no new mail yet
+            continue
 
-        # Fetch just the Subject header
         msg = gmail_service.users().messages().get(
             userId='me',
             id=new_id,
@@ -752,44 +743,17 @@ def register_handlers(tgapp: Application):
 # =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "whsec")
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL")  # e.g. https://your-app.onrender.com
-
-# Build PTB application for server mode
-tg_app_server: Application | None = None
-bot = None
-loop = asyncio.get_event_loop()
-
-if __name__ != "__main__":
-    # Server (gunicorn) boot path
-    load_dotenv()
-    DB_PATH = os.environ.get("DB_PATH", DB_PATH)
-    ADMIN_ID = os.environ.get("ADMIN_USER_ID", ADMIN_ID).strip()
-    PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", PAYMENT_PHONE).strip()
-    init_db(); ensure_seat_columns(); cleanup_expired_now()
-
-    if not BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN not set")
-    tg_app_server = ApplicationBuilder().token(BOT_TOKEN).build()
-    if tg_app_server.job_queue is None:
-        raise SystemExit('JobQueue not available. Install: pip install "python-telegram-bot[job-queue]==20.7"')
-    register_handlers(tg_app_server)
-    bot = tg_app_server.bot
-
-    # Start PTB + set webhook immediately
-    loop.run_until_complete(tg_app_server.initialize())
-    loop.run_until_complete(tg_app_server.start())
-    if PUBLIC_BASE_URL:
-        webhook_url = f"{PUBLIC_BASE_URL}/webhook/{WEBHOOK_SECRET}"
-        try:
-            loop.run_until_complete(bot.set_webhook(url=webhook_url))
-            log.info("Webhook set to %s", webhook_url)
-        except Exception as e:
-            log.error("Failed to set webhook: %s", e)
-    else:
-        log.warning("PUBLIC_BASE_URL not set — webhook not registered yet.")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
 # Flask app exposed as `app` for gunicorn
 app = Flask(__name__)
+
+# Global PTB app for server mode
+tg_app_server: Application | None = None
+
+@app.get("/")
+def index():
+    return "Bot is running. See /healthz", 200
 
 @app.get("/healthz")
 def healthz():
@@ -797,16 +761,50 @@ def healthz():
 
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def telegram_webhook():
-    if bot is None or tg_app_server is None:
+    # Only accept Telegram’s signed calls
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+        return "forbidden", 403
+    if tg_app_server is None:
         return "bot not ready", 503
-    if request.headers.get("content-type") != "application/json":
-        abort(403)
-    data = request.get_json(force=True, silent=True)
-    if not data:
-        return "no json", 400
-    update = TGUpdate.de_json(data, bot)
-    loop.create_task(tg_app_server.process_update(update))
+    data = request.get_json(force=True, silent=True) or {}
+    update = Update.de_json(data, tg_app_server.bot)
+    # Hand off to PTB loop and return immediately
+    tg_app_server.create_task(tg_app_server.process_update(update))
     return "ok", 200
+if __name__ != "__main__":
+    load_dotenv()
+    # env overrides
+    # env overrides
+    DB_PATH = os.environ.get("DB_PATH", DB_PATH)
+    ADMIN_ID = os.environ.get("ADMIN_USER_ID", ADMIN_ID).strip()
+    PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", PAYMENT_PHONE).strip()
+
+    init_db(); ensure_seat_columns(); cleanup_expired_now()
+    _init_gmail()
+
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN not set")
+
+    tg_app_server = ApplicationBuilder().token(BOT_TOKEN).build()
+    register_handlers(tg_app_server)
+
+    # Start PTB and set webhook
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(tg_app_server.initialize())
+    loop.run_until_complete(tg_app_server.start())
+    if PUBLIC_BASE_URL:
+        try:
+            loop.run_until_complete(
+                tg_app_server.bot.set_webhook(
+                    url=f"{PUBLIC_BASE_URL}/webhook/{WEBHOOK_SECRET}",
+                    secret_token=WEBHOOK_SECRET
+                )
+            )
+            log.info("Webhook set to %s/webhook/%s", PUBLIC_BASE_URL, WEBHOOK_SECRET)
+        except Exception as e:
+            log.error("Failed to set webhook: %s", e)
+    else:
+        log.warning("PUBLIC_BASE_URL not set — webhook not registered yet.")
 
 # =====================
 # Local entry (polling)
@@ -817,11 +815,13 @@ if __name__ == "__main__":
     if not token:
         raise SystemExit("BOT_TOKEN not set")
 
+    # env overrides
     DB_PATH = os.environ.get("DB_PATH", DB_PATH)
     ADMIN_ID = os.environ.get("ADMIN_USER_ID", ADMIN_ID).strip()
     PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", PAYMENT_PHONE).strip()
 
     init_db(); ensure_seat_columns(); cleanup_expired_now()
+    _init_gmail()
 
     app_local = ApplicationBuilder().token(token).build()
     register_handlers(app_local)
