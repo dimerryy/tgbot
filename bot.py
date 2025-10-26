@@ -788,8 +788,9 @@ def healthz():
 
 @app.post(f"/webhook/{os.environ.get('WEBHOOK_SECRET', 'whsec')}")
 def telegram_webhook():
-    # Verify Telegram secret token header
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != os.environ.get("WEBHOOK_SECRET", "whsec"):
+    hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if hdr != WEBHOOK_SECRET:
+        log.warning("Webhook 403: got header=%r expected=%r", hdr, WEBHOOK_SECRET)
         return "forbidden", 403
 
     if tg_app_server is None or app_loop is None:
