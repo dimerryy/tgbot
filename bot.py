@@ -774,6 +774,9 @@ contact_conv = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", cancel)],
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.DEBUG)
+logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 
 application.add_handler(contact_conv)
 application.add_handler(conv)
@@ -799,14 +802,26 @@ def health():
 def telegram_webhook():
     if not request.is_json:
         abort(400)
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    # hand over to PTB (running loop in background thread)
-    fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
+
     try:
-        fut.result(timeout=0.5)  # don't block long; errors propagate here
+        payload = request.get_json(force=True)
+        update = Update.de_json(payload, application.bot)
     except Exception as e:
-        log.warning("process_update async error: %s", e)
+        log.exception("Failed to parse Telegram update: %s", e)
+        return "", 200  # acknowledge to avoid retries storm
+
+    # hand over to PTB loop without waiting
+    fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
+
+    def _done(f):
+        try:
+            f.result()
+        except Exception as e:
+            log.exception("Update handling failed: %s", e)
+
+    fut.add_done_callback(_done)
     return "", 200
+
 
 @flask_app.get("/set_webhook")
 def set_webhook():
@@ -819,16 +834,22 @@ def set_webhook():
     return ("OK" if fut.result() else "Failed"), 200
 
 # ---------------- Boot ----------------
+_ptb_ready = False
+
 def _start_ptb():
-    # init DB & housekeeping
-    init_db()
-    ensure_seat_columns()
-    cleanup_expired_now()
-    # start PTB (initialize + start) inside its own loop
-    _ptb_loop.call_soon_threadsafe(lambda: None)  # ensure loop is alive
+    global _ptb_ready
+    init_db(); ensure_seat_columns(); cleanup_expired_now()
     asyncio.run_coroutine_threadsafe(application.initialize(), _ptb_loop).result()
     asyncio.run_coroutine_threadsafe(application.start(), _ptb_loop).result()
+    _ptb_ready = True
     log.info("PTB Application started.")
+
+@flask_app.before_request
+def _ensure_ready():
+    if request.path.startswith("/webhook/") and not _ptb_ready:
+        # Telegram will retry; just 200 to avoid spam
+        return ("", 200)
+
 
 # Create & start PTB event loop in background
 _ptb_loop = asyncio.new_event_loop()
