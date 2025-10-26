@@ -43,7 +43,7 @@ if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN not set")
 
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # e.g., https://your-domain.com
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", BOT_TOKEN)  # keep simple: default to token
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "whsec_qwertyyy")  # keep simple: default to token
 ADMIN_ID = (os.environ.get("ADMIN_USER_ID") or "").strip()
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 PAYMENT_PHONE = (os.environ.get("PAYMENT_PHONE") or "+77776952267").strip()
@@ -795,7 +795,7 @@ flask_app = Flask(__name__)
 def health():
     return "OK", 200
 
-@flask_app.post(f"/webhook/{WEBHOOK_SECRET}")
+@flask_app.post(f"/webhook/whsec_qwertyyy")
 def telegram_webhook():
     if not request.is_json:
         abort(400)
@@ -812,7 +812,7 @@ def telegram_webhook():
 def set_webhook():
     if not PUBLIC_URL:
         return "Set PUBLIC_URL env to use this endpoint", 400
-    url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
+    url = f"{PUBLIC_URL}/webhook/whsec_qwertyyy"
     async def _set():
         return await application.bot.set_webhook(url=url, allowed_updates=Update.ALL_TYPES)
     fut = asyncio.run_coroutine_threadsafe(_set(), _ptb_loop)
