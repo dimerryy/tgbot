@@ -786,27 +786,52 @@ def index():
 def healthz():
     return "ok", 200
 
-@app.post(f"/webhook/{os.environ.get('WEBHOOK_SECRET', 'whsec')}")
+# at top after loading env:
+WEBHOOK_SECRET = (os.environ.get("WEBHOOK_SECRET") or "whsec_qwertyyy").strip()
+WEBHOOK_PATH   = f"/webhook/{WEBHOOK_SECRET}"
+
+@app.post(WEBHOOK_PATH)
 def telegram_webhook():
     hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    ua  = request.headers.get("User-Agent", "")
+    ip  = request.headers.get("X-Forwarded-For", request.remote_addr)
+    raw = request.get_data(cache=False)  # raw body for length
+    log.warning("Webhook hit: ip=%s ua=%r hdr=%r bytes=%d", ip, ua, hdr, len(raw))
+
+    # Strict header check
     if hdr != WEBHOOK_SECRET:
-        log.warning("Webhook 403: got header=%r expected=%r", hdr, WEBHOOK_SECRET)
+        log.warning("403 secret mismatch: got %r expected %r", hdr, WEBHOOK_SECRET)
         return "forbidden", 403
 
     if tg_app_server is None or app_loop is None:
+        log.error("503: PTB not initialized")
         return "bot not ready", 503
 
-    data = request.get_json(force=True, silent=True) or {}
-    # IMPORTANT: use the aliased class
+    if not app_loop.is_running():
+        log.error("503: asyncio loop not running")
+        return "loop not running", 503
+
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+    except Exception as e:
+        log.exception("400: invalid JSON: %s", e)
+        return "bad json", 400
+
+    # Build Update using the alias from telegram import Update as TGUpdate
     update = TGUpdate.de_json(data, tg_app_server.bot)
 
-    # Hand over to the running asyncio loop
-    asyncio.run_coroutine_threadsafe(
+    # Submit to PTB loop and *surface errors now*:
+    fut = asyncio.run_coroutine_threadsafe(
         tg_app_server.process_update(update),
         app_loop
     )
+    try:
+        fut.result(timeout=1.0)  # wait a moment to catch handler errors in logs
+    except Exception as e:
+        log.exception("Handler error: %s", e)
 
     return "ok", 200
+
 
 
 
@@ -832,10 +857,15 @@ if __name__ != "__main__":
 
     # Start a dedicated asyncio loop thread & run PTB on it
     app_loop = _start_background_loop()
+    # after you create app_loop and schedule _boot()
+    log.info("Expecting Telegram webhook at %s%s secret=%r",
+         PUBLIC_BASE_URL, WEBHOOK_PATH, WEBHOOK_SECRET)
+
 
     async def _boot():
         await tg_app_server.initialize()
         await tg_app_server.start()
+        log.info("PTB Application started. job_queue=%s", bool(tg_app_server.job_queue))
         # set webhook (optional but recommended)
         public = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
         secret = os.environ.get("WEBHOOK_SECRET", "whsec")
