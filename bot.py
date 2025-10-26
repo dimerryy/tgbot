@@ -830,6 +830,22 @@ def _start_ptb():
     asyncio.run_coroutine_threadsafe(application.initialize(), _ptb_loop).result()
     asyncio.run_coroutine_threadsafe(application.start(), _ptb_loop).result()
     log.info("PTB Application started.")
+    # If PUBLIC_URL is set, register webhook automatically (runs in PTB loop)
+    if PUBLIC_URL:
+        webhook_url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
+        async def _set_webhook():
+            try:
+                await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
+                log.info("Webhook set to %s", webhook_url)
+            except Exception as e:
+                log.warning("Failed to set webhook: %s", e)
+        # schedule set webhook inside PTB loop
+        fut = asyncio.run_coroutine_threadsafe(_set_webhook(), _ptb_loop)
+        try:
+            fut.result(timeout=10)
+        except Exception as e:
+            log.warning("set_webhook failed: %s", e)
+
 
 # Create & start PTB event loop in background
 _ptb_loop = asyncio.new_event_loop()
