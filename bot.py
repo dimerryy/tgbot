@@ -230,9 +230,9 @@ def _headers_map(payload):
 
 async def monitor_gmail(update, context):
     if gmail_service is None:
-    await context.bot.send_message(update.effective_chat.id,
+        await context.bot.send_message(update.effective_chat.id,
                                    "Verification auto-forward is unavailable.")
-    return
+        return
 
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, "Log in, and I will send you a verification code…")
