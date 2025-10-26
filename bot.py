@@ -822,15 +822,17 @@ def telegram_webhook():
 
     # Submit to PTB loop and *surface errors now*:
     fut = asyncio.run_coroutine_threadsafe(
-        tg_app_server.process_update(update),
-        app_loop
-    )
-    try:
-        fut.result(timeout=1.0)  # wait a moment to catch handler errors in logs
-    except Exception as e:
-        log.exception("Handler error: %s", e)
+    tg_app_server.process_update(update),
+    app_loop
+)
 
-    return "ok", 200
+    def _cb(f):
+        try:
+            f.result()
+        except Exception as e:
+            log.exception("PTB handler raised: %s", e)
+
+    fut.add_done_callback(_cb)
 
 
 
