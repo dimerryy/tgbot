@@ -830,6 +830,7 @@ def _start_ptb():
     asyncio.run_coroutine_threadsafe(application.initialize(), _ptb_loop).result()
     asyncio.run_coroutine_threadsafe(application.start(), _ptb_loop).result()
     log.info("PTB Application started.")
+    logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
     # If PUBLIC_URL is set, register webhook automatically (runs in PTB loop)
     if PUBLIC_URL:
         webhook_url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
@@ -851,6 +852,7 @@ def _start_ptb():
 _ptb_loop = asyncio.new_event_loop()
 _thread = Thread(target=_ptb_loop.run_forever, daemon=True)
 _thread.start()
+logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 _start_ptb()
 
 if __name__ == "__main__":
