@@ -19,14 +19,25 @@ from telegram.ext import (
     ConversationHandler, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
 )
-
+global app_loop
 # Flask for webhook mode
 from flask import Flask, request
+import asyncio
+from threading import Thread
+
+app_loop: asyncio.AbstractEventLoop | None = None
+
+def _start_background_loop() -> asyncio.AbstractEventLoop:
+    loop = asyncio.new_event_loop()
+    t = Thread(target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True)
+    t.start()
+    return loop
+
 
 # =====================
 # Config (env overrides at boot)
 # =====================
-global DB_PATH, ADMIN_ID, PAYMENT_PHONE
+global DB_PATH, ADMIN_ID, PAYMENT_PHONE, tg_app_server
 
 RATE_PER_HOUR = 200
 CURRENCY = "KZT"
@@ -759,21 +770,29 @@ def index():
 def healthz():
     return "ok", 200
 
-@app.post(f"/webhook/{WEBHOOK_SECRET}")
+@app.post(f"/webhook/{os.environ.get('WEBHOOK_SECRET', 'whsec')}")
 def telegram_webhook():
     # Only accept Telegram’s signed calls
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != os.environ.get("WEBHOOK_SECRET", "whsec"):
         return "forbidden", 403
-    if tg_app_server is None:
+
+    if tg_app_server is None or app_loop is None:
         return "bot not ready", 503
+
     data = request.get_json(force=True, silent=True) or {}
     update = Update.de_json(data, tg_app_server.bot)
-    # Hand off to PTB loop and return immediately
-    tg_app_server.create_task(tg_app_server.process_update(update))
+
+    # Schedule processing onto the running background loop
+    asyncio.run_coroutine_threadsafe(tg_app_server.process_update(update), app_loop)
+
+    # Return immediately so Telegram doesn't time out
     return "ok", 200
+
+
+# Gunicorn imports this module => run server boot path
 if __name__ != "__main__":
     load_dotenv()
-    # env overrides
+
     # env overrides
     DB_PATH = os.environ.get("DB_PATH", DB_PATH)
     ADMIN_ID = os.environ.get("ADMIN_USER_ID", ADMIN_ID).strip()
@@ -782,29 +801,33 @@ if __name__ != "__main__":
     init_db(); ensure_seat_columns(); cleanup_expired_now()
     _init_gmail()
 
+    BOT_TOKEN = os.environ.get("BOT_TOKEN")
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN not set")
 
+    # Build app
     tg_app_server = ApplicationBuilder().token(BOT_TOKEN).build()
     register_handlers(tg_app_server)
 
-    # Start PTB and set webhook
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(tg_app_server.initialize())
-    loop.run_until_complete(tg_app_server.start())
-    if PUBLIC_BASE_URL:
-        try:
-            loop.run_until_complete(
-                tg_app_server.bot.set_webhook(
-                    url=f"{PUBLIC_BASE_URL}/webhook/{WEBHOOK_SECRET}",
-                    secret_token=WEBHOOK_SECRET
-                )
+    # Start a dedicated asyncio loop thread & run PTB on it
+    app_loop = _start_background_loop()
+
+    async def _boot():
+        await tg_app_server.initialize()
+        await tg_app_server.start()
+        # set webhook (optional but recommended)
+        public = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+        secret = os.environ.get("WEBHOOK_SECRET", "whsec")
+        if public:
+            await tg_app_server.bot.set_webhook(
+                url=f"{public}/webhook/{secret}",
+                secret_token=secret
             )
-            log.info("Webhook set to %s/webhook/%s", PUBLIC_BASE_URL, WEBHOOK_SECRET)
-        except Exception as e:
-            log.error("Failed to set webhook: %s", e)
-    else:
-        log.warning("PUBLIC_BASE_URL not set — webhook not registered yet.")
+            log.info("Webhook set to %s/webhook/%s", public, secret)
+        else:
+            log.warning("PUBLIC_BASE_URL not set — webhook not registered yet.")
+
+    asyncio.run_coroutine_threadsafe(_boot(), app_loop)
 
 # =====================
 # Local entry (polling)
