@@ -54,7 +54,7 @@ PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", "+7XXXXXXXXXX").strip()
 
 # Gmail token (optional)
 GMAIL_TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "/etc/secrets/token.pickle")
-gmail_service = None  # initialized in init_gmail()
+
 
 # =====================
 # DB schema & helpers
@@ -209,49 +209,56 @@ def get_seat_availability():
 # =====================
 # Gmail (optional)
 # =====================
-def init_gmail():
-    global gmail_service
-    try:
-        if (
-            GMAIL_TOKEN_PATH
-            and GMAIL_TOKEN_PATH != "__DISABLED__"
-            and os.path.exists(GMAIL_TOKEN_PATH)
-        ):
-            with open(GMAIL_TOKEN_PATH, "rb") as f:
-                creds = pickle.load(f)
-            gmail_service = build("gmail", "v1", credentials=creds)
-            log.info("Gmail service initialized from %s", GMAIL_TOKEN_PATH)
-        else:
-            log.warning("Gmail monitor disabled (GMAIL_TOKEN_PATH=%r).", GMAIL_TOKEN_PATH)
-    except Exception as e:
-        log.warning("Failed to init Gmail service: %s — Gmail monitor disabled.", e)
-        gmail_service = None
+# --- Gmail monitor (as before) ---
+import pickle
+from googleapiclient.discovery import build
+import asyncio
+
+# If you’re on Render with a Secret File:
+TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "token.pickle")
+# For local runs, you can switch to:
+# TOKEN_PATH = "token.pickle"
+
+with open(TOKEN_PATH, "rb") as token:
+    creds = pickle.load(token)
+
+gmail_service = build('gmail', 'v1', credentials=creds)
 
 def _headers_map(payload):
     return {h['name']: h['value'] for h in payload.get('headers', [])}
 
-async def monitor_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if gmail_service is None:
-        await context.bot.send_message(update.effective_chat.id, "Verification auto-forward is unavailable.")
-        return
+async def monitor_gmail(update, context):
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, "Log in, and I will send you a verification code…")
+
+    # Get the current latest message id
     res = gmail_service.users().messages().list(userId='me', maxResults=1).execute()
     latest_id = res['messages'][0]['id'] if 'messages' in res else None
+
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(5)  # check every 5 seconds
+
         res = gmail_service.users().messages().list(userId='me', maxResults=1).execute()
         if 'messages' not in res:
-            continue
+            continue  # inbox empty, keep waiting
+
         new_id = res['messages'][0]['id']
         if latest_id and new_id == latest_id:
-            continue
+            continue  # no new mail yet
+
+        # Fetch just the Subject header
         msg = gmail_service.users().messages().get(
-            userId='me', id=new_id, format='metadata',
-            metadataHeaders=['Subject'], fields='id,payload/headers'
+            userId='me',
+            id=new_id,
+            format='metadata',
+            metadataHeaders=['Subject'],
+            fields='id,payload/headers'
         ).execute()
+
         payload = msg.get('payload', {}) or {}
-        subject = _headers_map(payload).get('Subject', '(no subject)')
+        headers = _headers_map(payload)
+        subject = headers.get('Subject', '(no subject)')
+
         await context.bot.send_message(chat_id, subject)
         break
 
@@ -752,7 +759,7 @@ if __name__ != "__main__":
     DB_PATH = os.environ.get("DB_PATH", DB_PATH)
     ADMIN_ID = os.environ.get("ADMIN_USER_ID", ADMIN_ID).strip()
     PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", PAYMENT_PHONE).strip()
-    init_db(); ensure_seat_columns(); cleanup_expired_now(); init_gmail()
+    init_db(); ensure_seat_columns(); cleanup_expired_now()
 
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN not set")
@@ -808,7 +815,7 @@ if __name__ == "__main__":
     ADMIN_ID = os.environ.get("ADMIN_USER_ID", ADMIN_ID).strip()
     PAYMENT_PHONE = os.environ.get("PAYMENT_PHONE", PAYMENT_PHONE).strip()
 
-    init_db(); ensure_seat_columns(); cleanup_expired_now(); init_gmail()
+    init_db(); ensure_seat_columns(); cleanup_expired_now()
 
     app_local = ApplicationBuilder().token(token).build()
     register_handlers(app_local)
