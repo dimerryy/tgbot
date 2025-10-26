@@ -219,8 +219,8 @@ TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "token.pickle")
 # For local runs, you can switch to:
 # TOKEN_PATH = "token.pickle"
 
-with open(TOKEN_PATH, "rb") as token:
-    creds = pickle.load(token)
+# with open(TOKEN_PATH, "rb") as token:
+#     creds = pickle.load(token)
 
 # gmail_service = build('gmail', 'v1', credentials=creds)
 
