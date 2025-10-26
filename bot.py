@@ -222,12 +222,18 @@ TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "token.pickle")
 with open(TOKEN_PATH, "rb") as token:
     creds = pickle.load(token)
 
-gmail_service = build('gmail', 'v1', credentials=creds)
+# gmail_service = build('gmail', 'v1', credentials=creds)
 
+gmail_service = None
 def _headers_map(payload):
     return {h['name']: h['value'] for h in payload.get('headers', [])}
 
 async def monitor_gmail(update, context):
+    if gmail_service is None:
+    await context.bot.send_message(update.effective_chat.id,
+                                   "Verification auto-forward is unavailable.")
+    return
+
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, "Log in, and I will send you a verification code…")
 
