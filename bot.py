@@ -316,8 +316,9 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return WAIT_BILL
 
-with open("token.pickle", "rb") as token:
+with open("/etc/secrets/token.pickle", "rb") as token:
     creds = pickle.load(token)
+
 
 gmail_service = build('gmail', 'v1', credentials=creds)
 
