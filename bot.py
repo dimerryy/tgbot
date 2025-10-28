@@ -549,11 +549,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/my_session — see your latest session\n"
         "/help — this help\n"
         "/contact — write a message to the admin\n"
-        "Admin: /admin_add <email> <password> [seats]\n"
-        "Admin: /admin_set_seats <email> <seats>\n"
-        "Admin: /admin_list\n"
-        "Admin: /admin_purge\n"
-        "Admin: /admin_list_seats"
     )
 
 async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
