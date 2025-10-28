@@ -45,6 +45,7 @@ if not BOT_TOKEN:
 
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # e.g., https://your-domain.com
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "mysecret")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://tgbot-fdwx.onrender.com")
 ADMIN_ID = (os.environ.get("ADMIN_USER_ID") or "").strip()
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 PAYMENT_PHONE = (os.environ.get("PAYMENT_PHONE") or "+77776952267").strip()
@@ -840,8 +841,8 @@ def _start_ptb():
     log.info("PTB Application started.")
 
     # Automatically set webhook when app starts
-    if PUBLIC_URL:
-        url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
+    if PUBLIC_BASE_URL:
+        url = f"{PUBLIC_BASE_URL}/webhook/{WEBHOOK_SECRET}"
         fut = asyncio.run_coroutine_threadsafe(
             application.bot.set_webhook(url=url, allowed_updates=Update.ALL_TYPES),
             _ptb_loop,
