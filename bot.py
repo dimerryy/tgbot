@@ -44,7 +44,7 @@ if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN not set")
 
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # e.g., https://your-domain.com
-WEBHOOK_SECRET = "mysecret"  # keep simple: default to token
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "mysecret")
 ADMIN_ID = (os.environ.get("ADMIN_USER_ID") or "").strip()
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 PAYMENT_PHONE = (os.environ.get("PAYMENT_PHONE") or "+77776952267").strip()
@@ -803,10 +803,13 @@ def telegram_webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
     # hand over to PTB (running loop in background thread)
     fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
-    try:
-        fut.result(timeout=0.5)  # don't block long; errors propagate here
-    except Exception as e:
-        log.warning("process_update async error: %s", e)
+
+    def _log_future(f):
+        ex = f.exception()
+        if ex:
+            log.exception("process_update failed", exc_info=ex)
+
+    fut.add_done_callback(_log_future)    
     return "", 200
 
 @flask_app.get("/set_webhook")
