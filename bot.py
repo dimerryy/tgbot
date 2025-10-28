@@ -25,7 +25,6 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, ContextTypes, filters
 )
 
-
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -33,23 +32,25 @@ from google.auth.transport.requests import Request
 import json
 from google.oauth2.credentials import Credentials
 
-# ---------------- Config & Globals ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("timed_access_bot")
-
+# ---------------- Config & Logging ----------------
 load_dotenv()
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("timed_access_bot")
+logging.getLogger("telegram.ext").setLevel(logging.DEBUG if LOG_LEVEL == "DEBUG" else logging.INFO)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")  # REQUIRED
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN not set")
 
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # e.g., https://your-domain.com
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "mysecret")
+# Prefer Render's URL if PUBLIC_URL isn't provided
+PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "hook")  # set in env for production
 ADMIN_ID = (os.environ.get("ADMIN_USER_ID") or "").strip()
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 PAYMENT_PHONE = (os.environ.get("PAYMENT_PHONE") or "+77776952267").strip()
 GMAIL_TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "/etc/secrets/token.json")
-
 
 RATE_PER_HOUR = 200
 CURRENCY = "KZT"
@@ -228,58 +229,20 @@ def get_seat_availability():
                 eta_minutes = eta_sec // 60
     return max(0, free), eta_minutes
 
-# ---------------- Gmail (optional) ----------------
 # ---------------- Gmail (REQUIRED) ----------------
 if not os.path.exists(GMAIL_TOKEN_PATH):
     raise SystemExit(
         f"Gmail token file not found at {GMAIL_TOKEN_PATH}. "
-        "Set GMAIL_TOKEN_PATH or mount token.pickle."
+        "Set GMAIL_TOKEN_PATH or mount token.json."
     )
 
 try:
-    
     with open(GMAIL_TOKEN_PATH, "r") as token_file:
         gmail_creds = Credentials.from_authorized_user_info(json.load(token_file))
-
     gmail_service = build("gmail", "v1", credentials=gmail_creds)
     log.info("Gmail enabled (required) — credentials loaded.")
 except Exception as e:
     raise SystemExit(f"Failed to initialize Gmail client: {e}")
-
-
-def _headers_map(payload):
-    return {h['name']: h['value'] for h in payload.get('headers', [])}
-
-async def monitor_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    await context.bot.send_message(chat_id, "Log in, and I will send you a verification code…")
-
-    res = gmail_service.users().messages().list(userId='me', maxResults=1).execute()
-    latest_id = res['messages'][0]['id'] if 'messages' in res else None
-
-    while True:
-        await asyncio.sleep(5)
-        res = gmail_service.users().messages().list(userId='me', maxResults=1).execute()
-        if 'messages' not in res:
-            continue
-        new_id = res['messages'][0]['id']
-        if latest_id and new_id == latest_id:
-            continue
-
-        msg = gmail_service.users().messages().get(
-            userId='me',
-            id=new_id,
-            format='metadata',
-            metadataHeaders=['Subject'],
-            fields='id,payload/headers'
-        ).execute()
-
-        payload = msg.get('payload', {}) or {}
-        headers = {h['name']: h['value'] for h in payload.get('headers', [])}
-        subject = headers.get('Subject', '(no subject)')
-        await context.bot.send_message(chat_id, subject)
-        break
-
 
 # ---------------- Handlers ----------------
 async def copy_phone_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -316,6 +279,7 @@ async def expire_all_active_sessions_and_notify(context: ContextTypes.DEFAULT_TY
     recompute_allocated_counts()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("START handler entered for chat %s", update.effective_chat.id)
     free, eta = get_seat_availability()
     if free <= 0:
         msg = "No seats are available right now."
@@ -752,11 +716,18 @@ async def contact_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.warning("contact forward failed: %s", e)
     return ConversationHandler.END
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    log.exception("Exception while handling an update: %s", context.error)
-
 # ---------------- PTB Application & Handlers ----------------
 application: Application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# Error hook for ALL handler errors (prints tracebacks)
+async def _on_error(update, context):
+    log.exception("HANDLER ERROR: %s", context.error)
+application.add_error_handler(_on_error)
+
+# Simple /ping to verify end-to-end
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("PING handler entered for chat %s", update.effective_chat.id)
+    await update.message.reply_text("pong")
 
 conv = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
@@ -776,18 +747,19 @@ contact_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", cancel)],
 )
 
-application.add_handler(contact_conv)
-application.add_handler(conv)
-application.add_handler(CommandHandler("my_session", my_session))
-application.add_handler(CommandHandler("help", help_cmd))
-application.add_handler(CommandHandler("admin_add", admin_add))
-application.add_handler(CommandHandler("admin_set_seats", admin_set_seats))
-application.add_handler(CommandHandler("admin_list", admin_list))
-application.add_handler(CommandHandler("admin_purge", admin_purge))
-application.add_handler(CommandHandler("admin_list_seats", admin_list_seats))
-application.add_handler(CallbackQueryHandler(copy_phone_cb, pattern="^copy_phone$"))
-application.add_handler(CallbackQueryHandler(copy_ref_cb, pattern="^copy_ref$"))
-application.add_error_handler(error_handler)
+# Register order: /ping in group 0, convs in group 1
+application.add_handler(CommandHandler("ping", ping), group=0)
+application.add_handler(contact_conv, group=1)
+application.add_handler(conv, group=1)
+application.add_handler(CommandHandler("my_session", my_session), group=1)
+application.add_handler(CommandHandler("help", help_cmd), group=1)
+application.add_handler(CommandHandler("admin_add", admin_add), group=1)
+application.add_handler(CommandHandler("admin_set_seats", admin_set_seats), group=1)
+application.add_handler(CommandHandler("admin_list", admin_list), group=1)
+application.add_handler(CommandHandler("admin_purge", admin_purge), group=1)
+application.add_handler(CommandHandler("admin_list_seats", admin_list_seats), group=1)
+application.add_handler(CallbackQueryHandler(copy_phone_cb, pattern="^copy_phone$"), group=1)
+application.add_handler(CallbackQueryHandler(copy_ref_cb, pattern="^copy_ref$"), group=1)
 
 # ---------------- Flask Webhook Server ----------------
 flask_app = Flask(__name__)
@@ -796,18 +768,35 @@ flask_app = Flask(__name__)
 def health():
     return "OK", 200
 
+@flask_app.get("/webhook_info")
+def webhook_info():
+    fut = asyncio.run_coroutine_threadsafe(application.bot.get_webhook_info(), _ptb_loop)
+    info = fut.result().to_dict()
+    log.info("Webhook info: %s", info)
+    return info, 200
+
 @flask_app.post(f"/webhook/{WEBHOOK_SECRET}")
 def telegram_webhook():
     try:
         if not request.is_json:
             abort(400)
         payload = request.get_json(force=True)
-        # 1) log the whole update (safe—you’re on your own server logs)
         log.info("Incoming update: %s", json.dumps(payload, ensure_ascii=False))
 
-        update = Update.de_json(payload, application.bot)
+        # TEMP raw reply path for debugging /ping (comment out later if you want)
+        try:
+            msg = payload.get("message") or {}
+            if (msg.get("text") or "").strip() == "/ping":
+                chat_id = msg["chat"]["id"]
+                fut0 = asyncio.run_coroutine_threadsafe(
+                    application.bot.send_message(chat_id=chat_id, text="pong (raw)"),
+                    _ptb_loop,
+                )
+                fut0.result(timeout=5)
+        except Exception as e:
+            log.warning("raw reply failed: %s", e)
 
-        # 2) async fire-and-forget + log exceptions when they complete
+        update = Update.de_json(payload, application.bot)
         fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
 
         def _log_future(f):
@@ -817,19 +806,25 @@ def telegram_webhook():
 
         fut.add_done_callback(_log_future)
         return "", 200
-    except Exception as e:
+    except Exception:
         log.exception("webhook handler error")
         return "", 200  # still 200 so Telegram doesn't retry
 
 @flask_app.get("/set_webhook")
 def set_webhook():
-    if not PUBLIC_URL:
-        return "Set PUBLIC_URL env to use this endpoint", 400
-    url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
+    base = PUBLIC_URL
+    if not base:
+        return "Set PUBLIC_URL or rely on RENDER_EXTERNAL_URL.", 400
+    url = f"{base}/webhook/{WEBHOOK_SECRET}"
     async def _set():
         return await application.bot.set_webhook(url=url, allowed_updates=Update.ALL_TYPES)
     fut = asyncio.run_coroutine_threadsafe(_set(), _ptb_loop)
-    return ("OK" if fut.result() else "Failed"), 200
+    ok = fut.result()
+    if ok:
+        log.info("Webhook set to %s", url)
+    else:
+        log.error("Failed to set webhook to %s", url)
+    return ("OK" if ok else "Failed"), 200
 
 # ---------------- Boot ----------------
 def _start_ptb():
@@ -837,37 +832,40 @@ def _start_ptb():
     init_db()
     ensure_seat_columns()
     cleanup_expired_now()
+
     # start PTB (initialize + start) inside its own loop
     _ptb_loop.call_soon_threadsafe(lambda: None)  # ensure loop is alive
     asyncio.run_coroutine_threadsafe(application.initialize(), _ptb_loop).result()
     asyncio.run_coroutine_threadsafe(application.start(), _ptb_loop).result()
     log.info("PTB Application started.")
-    logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
-    # If PUBLIC_URL is set, register webhook automatically (runs in PTB loop)
+
+    # Auto-set webhook if URL known
     if PUBLIC_URL:
         webhook_url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
         async def _set_webhook():
             try:
-                await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
-                log.info("Webhook set to %s", webhook_url)
+                ok = await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
+                if ok:
+                    log.info("Webhook set to %s", webhook_url)
+                else:
+                    log.error("set_webhook returned false for %s", webhook_url)
             except Exception as e:
                 log.warning("Failed to set webhook: %s", e)
-        # schedule set webhook inside PTB loop
         fut = asyncio.run_coroutine_threadsafe(_set_webhook(), _ptb_loop)
         try:
             fut.result(timeout=10)
         except Exception as e:
-            log.warning("set_webhook failed: %s", e)
-
+            log.warning("set_webhook wait failed: %s", e)
 
 # Create & start PTB event loop in background
 _ptb_loop = asyncio.new_event_loop()
 _thread = Thread(target=_ptb_loop.run_forever, daemon=True)
 _thread.start()
-logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
+
 _start_ptb()
 
 if __name__ == "__main__":
-    # Run Flask server (production: use gunicorn or similar)
+    # Run Flask server (production: use gunicorn)
     port = int(os.environ.get("PORT", "8080"))
+    log.info("Starting Flask on 0.0.0.0:%s; webhook path /webhook/%s", port, "***" if len(WEBHOOK_SECRET) < 7 else WEBHOOK_SECRET[:3] + "***" + WEBHOOK_SECRET[-3:])
     flask_app.run(host="0.0.0.0", port=port)
