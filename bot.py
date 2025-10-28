@@ -328,12 +328,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Welcome!\n\n"
-        "This bot issues a temporary login (email/username) + password.\n"
+        "This bot issues a temporary login and password for ChatGPT-5.\n"
         f"Base rate: {RATE_PER_HOUR} {CURRENCY}/hour (billed in 30-min blocks).\n"
         "Long-duration discounts:\n"
         "• 1h: 0%   • 2h: 5%   • 4h: 10%   • 8h: 20%   • 12h: 25%\n\n"
         "How long do you need access?\n"
-        "Examples: 90m, 2h, 2h30m, 1h 20m, 45 minutes"
+        "Examples: 90m, 2h, 2h30m, 1h 20m, 45 minutes.\n\n"
+        "If something goes wrong, please contact the admin via /contact."
     )
     return ASK_DURATION
 
@@ -364,7 +365,7 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "cancel":
-        await query.edit_message_text("Cancelled.")
+        await query.edit_message_text("Cancelled.\nIf something goes wrong, please contact the admin via /contact.")
         return ConversationHandler.END
 
     minutes = int(context.user_data["minutes"])
@@ -380,7 +381,8 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Pay via *Jusan Bank* or *Kaspi.kz* to the phone number below, then send the receipt here.\n"
             f"Phone: `{PAYMENT_PHONE}`\n\n"
             "Please send a payment receipt *photo* or *PDF file* in this chat.\n"
-            "Tip: add the reference in the transfer comment if possible."
+            "Tip: add the reference in the transfer comment if possible.\n\n"
+            "If something goes wrong, please contact the admin via /contact."
         ),
         parse_mode="Markdown",
         reply_markup=kb_copy,
@@ -419,7 +421,8 @@ async def receive_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not acct:
         await update.message.reply_text(
             "Thanks! Receipt received. However, no seats are available at the moment. "
-            "Please try again later or contact support."
+            "Please try again later or contact support.\n\n"
+            "If something goes wrong, please contact the admin via /contact."
         )
         return ConversationHandler.END
 
@@ -451,7 +454,8 @@ async def receive_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (
             "Approved. Your access is active until {until}.\n\n"
             "Login (email/username): {login}\n"
-            "Temporary password: {password}\n"
+            "Temporary password: {password}\n\n"
+            "If something goes wrong, please contact the admin via /contact."
         ).format(
             until=fmt_dt(int(end.timestamp())),
             login=acct['label'],
@@ -464,7 +468,7 @@ async def receive_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await monitor_gmail(update, context)
     except Exception as e:
         log.warning("Failed to send verification code: %s", e)
-        await update.message.reply_text("Could not send verification at this time.")
+        await update.message.reply_text("Could not send verification at this time.\nIf something goes wrong, please contact the admin via /contact.")
 
     if ADMIN_ID:
         try:
@@ -537,7 +541,6 @@ async def my_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Last session: {row['status']}, account={row['label']}\n"
         f"Start: {fmt_dt(row['start_ts'])}\nEnd: {fmt_dt(row['end_ts'])}\n"
         f"Remaining: {mins} minutes\n"
-        f"Seats in use: {row['allocated_count']}/{row['max_concurrent']}"
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -635,7 +638,7 @@ async def admin_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for sid, _ in active:
             cancel_expiry_job(sid, context.application)
         await notify_users(context, [uid for _, uid in active],
-                           "Your session has ended because the admin purged all accounts. Please log out.")
+                           "Your session has ended because the admin purged all accounts. Please log out; keeping it open may slow others’ work.\n\nIf something goes wrong, please contact the admin via /contact. ")
         await update.message.reply_text(f"Purged all accounts and ended {len(active)} active session(s).")
         return
 
@@ -662,7 +665,7 @@ async def admin_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         release_seat(s["account_id"])
         cancel_expiry_job(sid, context.application)
         try:
-            await context.bot.send_message(chat_id=s["telegram_id"], text=f"Your session was ended by the admin. Please log out.")
+            await context.bot.send_message(chat_id=s["telegram_id"], text=f"Your session was ended by the admin. Please log out; keeping it open may slow others’ work. \n\nIf something goes wrong, please contact the admin via /contact.")
         except Exception:
             pass
         await update.message.reply_text(f"Ended session #{sid} and freed its seat.")
@@ -694,7 +697,7 @@ async def admin_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for sid, _ in affected:
         cancel_expiry_job(sid, context.application)
     await notify_users(context, [uid for _, uid in affected],
-                       f"Your session was ended because the admin purged the account: {target_label}. Please log out.")
+                       f"Your session was ended because the admin purged the account: {target_label}. Please log out; keeping it open may slow others’ work. \n\nIf something goes wrong, please contact the admin via /contact.")
     await update.message.reply_text(f"Purged login: {target_label}. Ended {len(affected)} active session(s).")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -717,7 +720,7 @@ async def expire_session_job(context: ContextTypes.DEFAULT_TYPE):
             return
         con.execute("UPDATE sessions SET status='expired' WHERE id = ?", (session_id,))
     release_seat(account_id)
-    await context.bot.send_message(chat_id=chat_id, text="Your session has expired. Please log out.")
+    await context.bot.send_message(chat_id=chat_id, text="Your session has expired. Please log out; keeping it open may slow others’ work.\n\nIf something goes wrong, please contact the admin via /contact.")
 
 async def contact_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ADMIN_ID:
