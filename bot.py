@@ -798,19 +798,28 @@ def health():
 
 @flask_app.post(f"/webhook/{WEBHOOK_SECRET}")
 def telegram_webhook():
-    if not request.is_json:
-        abort(400)
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    # hand over to PTB (running loop in background thread)
-    fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
+    try:
+        if not request.is_json:
+            abort(400)
+        payload = request.get_json(force=True)
+        # 1) log the whole update (safe—you’re on your own server logs)
+        log.info("Incoming update: %s", json.dumps(payload, ensure_ascii=False))
 
-    def _log_future(f):
-        ex = f.exception()
-        if ex:
-            log.exception("process_update failed", exc_info=ex)
+        update = Update.de_json(payload, application.bot)
 
-    fut.add_done_callback(_log_future)    
-    return "", 200
+        # 2) async fire-and-forget + log exceptions when they complete
+        fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _ptb_loop)
+
+        def _log_future(f):
+            ex = f.exception()
+            if ex:
+                log.exception("process_update failed", exc_info=ex)
+
+        fut.add_done_callback(_log_future)
+        return "", 200
+    except Exception as e:
+        log.exception("webhook handler error")
+        return "", 200  # still 200 so Telegram doesn't retry
 
 @flask_app.get("/set_webhook")
 def set_webhook():
