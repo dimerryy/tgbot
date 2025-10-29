@@ -211,50 +211,64 @@ def _user_tag(u) -> str:
 def _is_admin(update: Update) -> bool:
     return bool(ADMIN_ID) and str(update.effective_user.id) == str(ADMIN_ID)
 
-def get_seat_availability():
-    # ensure columns exist in case of an old DB
-    try:
-        with db() as con:
-            cols = {row[1] for row in con.execute("PRAGMA table_info(accounts)")}
-            if "max_concurrent" not in cols or "allocated_count" not in cols:
-                # add missing columns on the fly
-                if "max_concurrent" not in cols:
-                    con.execute("ALTER TABLE accounts ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 1")
-                if "allocated_count" not in cols:
-                    con.execute("ALTER TABLE accounts ADD COLUMN allocated_count INTEGER NOT NULL DEFAULT 0")
-    except Exception as e:
-        log.warning("Column check/patch failed: %s", e)
+def ensure_default_account_if_empty():
+    label = os.environ.get("DEFAULT_LOGIN")
+    token = os.environ.get("DEFAULT_PASSWORD")
+    max_cc = int(os.environ.get("DEFAULT_MAX_SEATS", "5"))
 
-    now_ts = int(datetime.now(tz=TIMEZONE).timestamp())
+    if not label or not token:
+        return None  # nothing to create
+
     with db() as con:
-        # COALESCE handles any nulls
-        latest = con.execute("""
-            SELECT id,
-                   COALESCE(max_concurrent, 1)    AS max_concurrent,
-                   COALESCE(allocated_count, 0)   AS allocated_count
-            FROM accounts
-            ORDER BY id DESC
-            LIMIT 1
-        """).fetchone()
+        # Create only if the table is empty (race-safe in SQLite)
+        con.execute(
+            """
+            INSERT INTO accounts(label, token, is_allocated, max_concurrent, allocated_count)
+            SELECT ?, ?, 0, ?, 0
+            WHERE NOT EXISTS (SELECT 1 FROM accounts);
+            """,
+            (label, token, max_cc),
+        )
+        latest = con.execute(
+            "SELECT id, max_concurrent, allocated_count FROM accounts ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return latest
 
-        if not latest:
-            return 0, None
+def get_seat_availability():
+    now_ts = int(datetime.now(tz=TIMEZONE).timestamp())
 
-        free = int(latest["max_concurrent"] - latest["allocated_count"])
-
-        eta_row = con.execute(
-            "SELECT MIN(end_ts) FROM sessions "
-            "WHERE status='active' AND account_id = ? AND end_ts > ?",
-            (latest["id"], now_ts)
+    with db() as con:
+        latest = con.execute(
+            "SELECT id, max_concurrent, allocated_count FROM accounts ORDER BY id DESC LIMIT 1"
         ).fetchone()
 
-        eta_minutes = None
-        if eta_row and eta_row[0]:
-            eta_sec = eta_row[0] - now_ts
-            if eta_sec > 0:
-                eta_minutes = eta_sec // 60
+    if not latest:
+        # Try to create a default account once
+        latest = ensure_default_account_if_empty()
+        if not latest:
+            # No env vars provided → still return no seats
+            return 0, None
+
+    free = int(latest["max_concurrent"] - latest["allocated_count"])
+
+    with db() as con:
+        eta_row = con.execute(
+            """
+            SELECT MIN(end_ts)
+            FROM sessions
+            WHERE status='active' AND account_id = ? AND end_ts > ?
+            """,
+            (latest["id"], now_ts),
+        ).fetchone()
+
+    eta_minutes = None
+    if eta_row and eta_row[0]:
+        eta_sec = eta_row[0] - now_ts
+        if eta_sec > 0:
+            eta_minutes = eta_sec // 60
 
     return max(0, free), eta_minutes
+
 
 
 # ---------------- Gmail (optional) ----------------
