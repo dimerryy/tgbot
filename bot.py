@@ -754,6 +754,35 @@ async def contact_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.exception("Exception while handling an update: %s", context.error)
 
+def ensure_default_account():
+    """
+    If there are no accounts yet, create one from env:
+    DEFAULT_LOGIN, DEFAULT_PASSWORD, DEFAULT_MAX_SEATS.
+    This lets the bot work without /admin_add.
+    """
+    login = os.environ.get("DEFAULT_LOGIN", "").strip()
+    password = os.environ.get("DEFAULT_PASSWORD", "").strip()
+    max_cc = int(os.environ.get("DEFAULT_MAX_SEATS", "5") or "5")
+
+    if not login or not password:
+        # Nothing to seed (keeps you safe in prod if envs aren’t set)
+        log.info("No DEFAULT_LOGIN/DEFAULT_PASSWORD provided; skipping seeding.")
+        return
+
+    with db() as con:
+        # If there is already at least one account, do nothing.
+        existing = con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+        if existing and int(existing) > 0:
+            return
+
+        # Otherwise seed the default one.
+        con.execute(
+            "INSERT INTO accounts (label, token, is_allocated, max_concurrent, allocated_count) "
+            "VALUES (?, ?, 0, ?, 0)",
+            (login, password, max_cc),
+        )
+        log.info("Seeded default account '%s' with %d seat(s).", login, max_cc)
+
 # ---------------- PTB Application & Handlers ----------------
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -830,6 +859,7 @@ def _start_ptb():
     # Initialize DB & housekeeping
     init_db()
     ensure_seat_columns()
+    ensure_default_account()
     cleanup_expired_now()
 
     # Start PTB (initialize + start) inside its own loop
